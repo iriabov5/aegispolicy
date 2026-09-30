@@ -1,0 +1,189 @@
+openapi: 3.1.0
+info:
+  title: AegisPolicy API
+  version: 0.2.0
+  description: |-
+    Zero-Trust API принятия authorization decisions.
+    Идентификатор субъекта формируется только из проверенного JWT claim `sub`.
+servers:
+  - url: http://127.0.0.1:8080
+    description: Локальное development-окружение
+tags:
+  - name: Authorization
+    description: Вычисление policy decision для authenticated subject.
+  - name: Health
+    description: Проверка процесса и его зависимостей.
+  - name: Documentation
+    description: Машиночитаемый HTTP-контракт.
+paths:
+  /v1/authorize:
+    post:
+      operationId: authorize
+      tags: [Authorization]
+      summary: Вычислить authorization decision
+      description: |-
+        Проверяет Bearer JWT, использует `sub` как `subject.id`, загружает trusted facts
+        и возвращает результат OPA только после обязательной записи аудита.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthorizationRequest'
+            examples:
+              изменениеДокумента:
+                summary: Запрос на изменение документа
+                value:
+                  action: document:update
+                  resource:
+                    type: document
+                    id: doc-1
+                  context: {}
+      responses:
+        '200':
+          description: Решение ALLOW или DENY успешно вычислено и записано в аудит.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthorizationDecision'
+        '400':
+          description: Некорректная структура запроса.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: invalid_request
+        '401':
+          description: Bearer credential отсутствует или не прошёл проверку.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: authentication_failed
+        '503':
+          description: JWKS либо одна из authorization dependencies временно недоступна.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /health/live:
+    get:
+      operationId: live
+      tags: [Health]
+      summary: Проверить работу HTTP process
+      security: []
+      responses:
+        '200':
+          description: HTTP process работает.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+  /health/ready:
+    get:
+      operationId: ready
+      tags: [Health]
+      summary: Проверить готовность authorization dependencies
+      security: []
+      responses:
+        '200':
+          description: PostgreSQL и OPA доступны.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '503':
+          description: Одна из обязательных dependencies недоступна.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /openapi.yaml:
+    get:
+      operationId: openAPI
+      tags: [Documentation]
+      summary: Получить канонический OpenAPI contract
+      security: []
+      responses:
+        '200':
+          description: OpenAPI 3.1 YAML, встроенный в текущий build.
+          content:
+            application/yaml:
+              schema:
+                type: string
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: RS256 JWT с обязательными `kid`, `iss`, `aud`, `exp`, `nbf` и `sub`.
+  schemas:
+    AuthorizationRequest:
+      type: object
+      additionalProperties: false
+      required: [action, resource]
+      properties:
+        action:
+          type: string
+          maxLength: 128
+          pattern: '^[^:]+:[^:]+$'
+          examples: [document:update]
+        resource:
+          $ref: '#/components/schemas/Resource'
+        context:
+          type: object
+          additionalProperties: true
+          default: {}
+    Resource:
+      type: object
+      additionalProperties: false
+      required: [type, id]
+      properties:
+        type:
+          type: string
+          maxLength: 128
+          examples: [document]
+        id:
+          type: string
+          maxLength: 128
+          examples: [doc-1]
+    AuthorizationDecision:
+      type: object
+      additionalProperties: false
+      required: [decision_id, decision, reasons, policy_name, policy_revision]
+      properties:
+        decision_id:
+          type: string
+          format: uuid
+        decision:
+          type: string
+          enum: [ALLOW, DENY]
+        reasons:
+          type: array
+          minItems: 1
+          items:
+            type: string
+        policy_name:
+          type: string
+        policy_revision:
+          type: string
+    Health:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, ready]
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: string

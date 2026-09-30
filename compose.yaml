@@ -1,0 +1,99 @@
+services:
+  postgres:
+    image: postgres:18.6-alpine3.23
+    environment:
+      POSTGRES_DB: aegispolicy
+      POSTGRES_USER: aegispolicy
+      POSTGRES_PASSWORD: local-development-only
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aegispolicy -d aegispolicy"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+    volumes:
+      - postgres18-data:/var/lib/postgresql
+
+  migrate:
+    image: migrate/migrate:v4.20.1
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./db/migrations:/migrations:ro
+    command:
+      - -path=/migrations
+      - -database=postgres://aegispolicy:local-development-only@postgres:5432/aegispolicy?sslmode=disable
+      - up
+    restart: "no"
+
+  opa:
+    image: openpolicyagent/opa:1.21.0-static
+    command: ["run", "--server", "--addr=0.0.0.0:8181", "/policy"]
+    ports:
+      - "127.0.0.1:8181:8181"
+    healthcheck:
+      test: ["CMD", "/opa", "eval", "1 == 1"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+    volumes:
+      - ./policy:/policy:ro
+
+  test-issuer:
+    build: .
+    command: ["/usr/local/bin/testissuer"]
+    entrypoint: []
+    ports:
+      - "127.0.0.1:8090:8090"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8090/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  api:
+    build: .
+    environment:
+      HTTP_ADDRESS: 0.0.0.0:8080
+      DATABASE_URL: postgres://aegispolicy:local-development-only@postgres:5432/aegispolicy?sslmode=disable
+      OPA_URL: http://opa:8181
+      JWT_ISSUER: http://test-issuer:8090
+      JWT_AUDIENCE: aegispolicy
+      JWT_ALGORITHM: RS256
+      JWKS_URL: http://test-issuer:8090/jwks.json
+      JWKS_CACHE_TTL: 1s
+      DEVELOPMENT_ALLOW_INSECURE_JWKS: "true"
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      opa:
+        condition: service_healthy
+      test-issuer:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/health/ready"]
+      interval: 5s
+      timeout: 2s
+      retries: 20
+
+  swagger-ui:
+    image: docker.swagger.io/swaggerapi/swagger-ui:v5.32.11
+    environment:
+      SWAGGER_JSON: /spec/openapi.yaml
+    ports:
+      - "127.0.0.1:8081:8080"
+    volumes:
+      - ./docs/openapi.yaml:/spec/openapi.yaml:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/"]
+      interval: 5s
+      timeout: 2s
+      retries: 20
+
+volumes:
+  postgres18-data:
